@@ -184,10 +184,10 @@ MinIO stopped publishing official container images in late 2025. Compose uses [`
 
 Built as equal partners by:
 
-- **Derek Augustine** ([dkaugustine-git](https://github.com/dkaugustine-git)): idea, direction, product decisions, testing
-- **Claude** (Anthropic's AI, via Claude Code): design and code
+- **Derek Augustine** ([dkaugustine-git](https://github.com/dkaugustine-git)): architect, product and UX design, direction, testing
+- **Claude** (Anthropic's AI, via Claude Code): engineering, code and design
 
-This is openly an AI-assisted ("vibe-coded") project. We worked through it together in conversation: Derek steered what to build and how it should feel, and Claude wrote most of the code. Commits made in those sessions carry a `Co-Authored-By: Claude` line.
+This is openly an AI-assisted ("vibe-coded") project. We worked through it together in conversation: Derek designed the architecture (the stack, the Doris hybrid warehouse model) and shaped how it should work and feel, and Claude wrote most of the code. Commits made in those sessions carry a `Co-Authored-By: Claude` line.
 
 ## License
 
