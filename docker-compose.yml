@@ -85,7 +85,7 @@ services:
       VITE_API_PROXY: http://api:8000
       VITE_CLOUDBEAVER_PROXY: http://cloudbeaver:8978
       CHOKIDAR_USEPOLLING: "true"
-    ports: ["${WEB_PORT:-5173}:5173"]
+    ports: ["${WEB_PORT:-5180}:5173"]
     volumes:
       - ./web:/web
       - web_node_modules:/web/node_modules
@@ -138,7 +138,7 @@ services:
     entrypoint: ["/bin/bash", "/spadesys/start.sh"]
     environment:
       CB_SERVER_NAME: Spadesys
-      CB_SERVER_URL: http://localhost:${WEB_PORT:-5173}/cloudbeaver/
+      CB_SERVER_URL: http://localhost:${WEB_PORT:-5180}/cloudbeaver/
       CB_ADMIN_NAME: ${CLOUDBEAVER_ADMIN:-cbadmin}
       CB_ADMIN_PASSWORD: ${CLOUDBEAVER_ADMIN_PASSWORD:-Spadesys1}
       CLOUDBEAVER_ROOT_URI: /cloudbeaver/

@@ -16,16 +16,45 @@ A warehouse (Apache Doris) and JupyterLab are opt-in profiles.
 
 ## Quick start
 
-```bash
-cp .env.example .env        # optional; defaults work
-docker compose up --build
-```
+You don't need to be a developer to run Spadesys. Everything runs inside Docker, so you install Docker once and Spadesys brings everything else with it.
+
+### What you need first
+
+- **Docker Desktop**, free for personal use, education and small businesses. Download it from [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) (Windows or Mac). On Linux, install Docker Engine with the Compose plugin.
+  - On Windows, the installer may ask to turn on **WSL 2**. Say yes and restart when it asks.
+  - Open Docker Desktop once after installing and wait until it says it's running. It needs to be running whenever you use Spadesys.
+- **About 4 GB of free memory and 10 GB of disk space.** The optional Doris warehouse needs about 8 GB of memory on its own.
+- **The Spadesys files.** Either:
+  - **No Git:** on the [GitHub page](https://github.com/dkaugustine-git/spadesys), click the green **Code** button, then **Download ZIP**, and unzip it somewhere you'll find it, such as `Documents\spadesys`.
+  - **With Git:** `git clone https://github.com/dkaugustine-git/spadesys.git`
+
+### Start it
+
+1. **Open a terminal in the Spadesys folder.**
+   - Windows: open the folder in File Explorer, right-click an empty spot, and choose **Open in Terminal**.
+   - Mac: open **Terminal**, type `cd ` (with a space), drag the folder onto the window, and press Enter.
+2. **Run this command:**
+
+   ```bash
+   docker compose up --build
+   ```
+
+   The first start downloads everything Spadesys needs and can take 5 to 15 minutes. Later starts take under a minute. Lots of text will scroll by; that's normal. Leave this window open while you use Spadesys.
+3. **Open [http://localhost:5180](http://localhost:5180) in your browser.** If the page doesn't load yet, wait a minute and refresh.
+
+### Stop it and start it again
+
+- **Stop:** click the terminal window and press **Ctrl+C**, or run `docker compose down` from the same folder.
+- **Start again:** open a terminal in the folder and run `docker compose up` again.
+- Your tables, files and pipelines are kept between restarts. Only `docker compose down -v` erases them.
+
+### Everything it runs
 
 | What | URL |
 |---|---|
-| Web UI | http://localhost:5173 |
+| Web UI | http://localhost:5180 |
 | API docs (also the **API** tab) | http://localhost:8000/api/docs |
-| CloudBeaver (also the **Databases** tab) | http://localhost:5173/cloudbeaver/ (admin `cbadmin` / `Spadesys1`) |
+| CloudBeaver (also the **Databases** tab) | http://localhost:5180/cloudbeaver/ (admin `cbadmin` / `Spadesys1`) |
 | MinIO console | http://localhost:9001 (`spadesys` / `spadesys-secret`) |
 | Postgres | `localhost:5432` (`spadesys` / `spadesys`) |
 
