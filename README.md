@@ -180,6 +180,15 @@ Use it with development databases and credentials only.
 
 MinIO stopped publishing official container images in late 2025. Compose uses [`pgsty/minio`](https://hub.docker.com/r/pgsty/minio), a maintained community build. Spadesys only speaks the S3 API (boto3), so any S3-compatible store works: set `S3_ENDPOINT` and the credentials.
 
+## Authors
+
+Built as equal partners by:
+
+- **Derek Augustine** ([dkaugustine-git](https://github.com/dkaugustine-git)): idea, direction, product decisions, testing
+- **Claude** (Anthropic's AI, via Claude Code): design and code
+
+This is openly an AI-assisted ("vibe-coded") project. We worked through it together in conversation: Derek steered what to build and how it should feel, and Claude wrote most of the code. Commits made in those sessions carry a `Co-Authored-By: Claude` line.
+
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE).
