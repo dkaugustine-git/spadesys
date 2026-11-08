@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Spadesys ---
+node_modules/
+web/dist/
+data/*
+!data/.gitkeep
+notebooks/.ipynb_checkpoints/

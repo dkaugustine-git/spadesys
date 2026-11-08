@@ -1,0 +1,176 @@
+# Spadesys: Simple Pipelines And Data Engineering System
+#
+#   docker compose up                          # core: postgres, minio, api, worker, web, cloudbeaver
+#   docker compose --profile warehouse up      # + Apache Doris (needs ~8GB RAM, see README)
+#   docker compose --profile sources up        # + MySQL (sample source system)
+#   docker compose --profile tools up          # + JupyterLab
+#
+# Profiles combine: docker compose --profile warehouse --profile tools up
+
+x-api-env: &api-env
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-spadesys}:${POSTGRES_PASSWORD:-spadesys}@postgres:5432/${POSTGRES_DB:-spadesys}
+  S3_ENDPOINT: http://minio:9000
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-spadesys}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-spadesys-secret}
+  S3_BUCKET: ${S3_BUCKET:-landing}
+
+services:
+  # ---------------------------------------------------------------- core
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-spadesys}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spadesys}
+      POSTGRES_DB: ${POSTGRES_DB:-spadesys}
+    ports: ["${POSTGRES_PORT:-5432}:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-spadesys} -d ${POSTGRES_DB:-spadesys}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    # MinIO stopped publishing official images in late 2025; pgsty/minio is a
+    # maintained community build of the same server. Any S3-compatible store works.
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-spadesys}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-spadesys-secret}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes: [miniodata:/data]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9000/minio/health/live || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: ./api
+    command: uvicorn spadesys.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      <<: *api-env
+      CLOUDBEAVER_WORKSPACE: /cloudbeaver
+      POSTGRES_USER: ${POSTGRES_USER:-spadesys}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spadesys}
+      POSTGRES_DB: ${POSTGRES_DB:-spadesys}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-spadesys}
+    ports: ["${API_PORT:-8000}:8000"]
+    volumes:
+      - ./api:/app
+      - ./data:/data
+      - cloudbeaver:/cloudbeaver  # writes the connection list CloudBeaver shows
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
+
+  worker:
+    build: ./api
+    command: python -m spadesys.worker
+    environment: *api-env
+    volumes: ["./api:/app", "./data:/data"]  # /data/inbox holds the folders pipelines watch
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      api: { condition: service_started }
+
+  web:
+    image: node:22-alpine
+    working_dir: /web
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
+    environment:
+      VITE_API_PROXY: http://api:8000
+      VITE_CLOUDBEAVER_PROXY: http://cloudbeaver:8978
+      CHOKIDAR_USEPOLLING: "true"
+    ports: ["${WEB_PORT:-5173}:5173"]
+    volumes:
+      - ./web:/web
+      - web_node_modules:/web/node_modules
+    depends_on: [api]
+
+  # ---------------------------------------------------------- warehouse
+  # Doris FE/BE need fixed IPs (see FE_SERVERS / BE_ADDR). They sit outside the
+  # dynamic ip_range of the default network so nothing else can grab them.
+  doris-fe:
+    profiles: [warehouse]
+    image: apache/doris:fe-3.0.4
+    hostname: doris-fe
+    environment:
+      FE_SERVERS: fe1:172.28.80.10:9010
+      FE_ID: 1
+    ports:
+      - "8030:8030"   # web UI / HTTP
+      - "9030:9030"   # MySQL protocol
+    volumes: [dorisfe:/opt/apache-doris/fe/doris-meta]
+    networks:
+      default: { ipv4_address: 172.28.80.10 }
+
+  doris-be:
+    profiles: [warehouse]
+    image: apache/doris:be-3.0.4
+    hostname: doris-be
+    environment:
+      FE_SERVERS: fe1:172.28.80.10:9010
+      BE_ADDR: 172.28.80.11:9050
+    ports: ["8040:8040"]
+    volumes: [dorisbe:/opt/apache-doris/be/storage]
+    depends_on: [doris-fe]
+    networks:
+      default: { ipv4_address: 172.28.80.11 }
+
+  # ------------------------------------------------------------ sources
+  mysql:
+    profiles: [sources]
+    image: mysql:8.4.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-spadesys}
+      MYSQL_DATABASE: source_app
+    ports: ["${MYSQL_PORT:-3306}:3306"]
+    volumes: [mysqldata:/var/lib/mysql]
+
+  # -------------------------------------------------------------- tools
+  # Web version of DBeaver. Shown on the Databases tab; Spadesys keeps its connection list up to date.
+  cloudbeaver:
+    image: dbeaver/cloudbeaver:24.3.3
+    entrypoint: ["/bin/bash", "/spadesys/start.sh"]
+    environment:
+      CB_SERVER_NAME: Spadesys
+      CB_SERVER_URL: http://localhost:${WEB_PORT:-5173}/cloudbeaver/
+      CB_ADMIN_NAME: ${CLOUDBEAVER_ADMIN:-cbadmin}
+      CB_ADMIN_PASSWORD: ${CLOUDBEAVER_ADMIN_PASSWORD:-Spadesys1}
+      CLOUDBEAVER_ROOT_URI: /cloudbeaver/
+      CLOUDBEAVER_APP_GRANT_CONNECTIONS_ACCESS_TO_ANONYMOUS_TEAM: "true"
+    ports: ["${CLOUDBEAVER_PORT:-8978}:8978"]
+    volumes:
+      - cloudbeaver:/opt/cloudbeaver/workspace
+      - ./tools/cloudbeaver:/spadesys:ro
+
+  jupyter:
+    profiles: [tools]
+    image: quay.io/jupyter/scipy-notebook:2025-03-14
+    environment:
+      JUPYTER_TOKEN: ${JUPYTER_TOKEN:-spadesys}
+      <<: *api-env
+    ports: ["8888:8888"]
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ./data:/home/jovyan/data
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.28.80.0/24
+          ip_range: 172.28.80.128/25
+
+volumes:
+  pgdata:
+  miniodata:
+  mysqldata:
+  dorisfe:
+  dorisbe:
+  cloudbeaver:
+  web_node_modules:
