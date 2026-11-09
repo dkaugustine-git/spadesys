@@ -15,6 +15,7 @@ class Settings(BaseSettings):
 
     meta_schema: str = "spadesys"  # Spadesys's own bookkeeping
     raw_schema: str = "raw"  # landed source data
+    clean_schema: str = "clean"  # what transforms write
 
     worker_poll_seconds: float = 2.0
     max_upload_mb: int = 200

@@ -1,4 +1,4 @@
-"""Pipelines: a folder of files -> a Spadesys table, run on demand or by watching."""
+"""Pipelines: orchestration. Run an extract (transforms and loads next) on demand or by watching."""
 
 from __future__ import annotations
 
@@ -11,14 +11,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import extracts as ex_mod
 from .. import pipelines as pl
-from .. import storage
 from ..db import get_session
-from ..events import emit, human_bytes
-from ..models import Event, Pipeline, Run, Source
+from ..events import emit
+from ..models import Event, Extract, Pipeline, Run
 from ..schemas import EventOut, RunOut
-from ..services import create_source
-from .sources import read_upload
+from .extracts import ExtractIn, add_file_to, create_extract, extract_fields, table_info
 
 router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 DB = Annotated[Session, Depends(get_session)]
@@ -26,47 +25,52 @@ DB = Annotated[Session, Depends(get_session)]
 
 class PipelineIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    extract_id: uuid.UUID | None = None  # use this extract...
+    # ...or make a new one from these (same fields as POST /extracts)
     source_kind: Literal["folder", "storage"] = "folder"
-    bucket: str | None = None  # storage: which bucket (default: Spadesys's own)
-    prefix: str | None = None  # storage: which folder in it (default: incoming/<name>/)
+    bucket: str | None = None
+    prefix: str | None = None
     pattern: str = "*.csv"
-    destination_source_id: uuid.UUID | None = None  # load into this existing table...
-    new_table_name: str | None = None  # ...or create a new one
+    destination_source_id: uuid.UUID | None = None
+    new_table_name: str | None = None
+    layout: dict[str, Any] | None = None
     mode: Literal["manual", "watch"] = "manual"
     watch_seconds: int = Field(10, ge=5, le=3600)
 
 
 class PipelinePatch(BaseModel):
     name: str | None = None
-    pattern: str | None = None
+    extract_id: uuid.UUID | None = None
     mode: Literal["manual", "watch"] | None = None
     watch_seconds: int | None = Field(None, ge=5, le=3600)
-    destination_source_id: uuid.UUID | None = None
 
 
 class PipelineOut(BaseModel):
     id: uuid.UUID
     name: str
-    source_kind: str
-    folder: str
-    host_path: str
-    location: str
-    bucket: str | None
-    prefix: str | None
-    pattern: str
-    destination: dict[str, Any] | None
+    extract: dict[str, Any] | None  # {id, name, kind}
     mode: str
     watch_seconds: int
     last_checked_at: datetime | None
     created_at: datetime
-    waiting: int
-    last_run: RunOut | None
+    # The extract's details, repeated here so the pipeline page can show them without a second call.
+    source_kind: str | None = None
+    folder: str | None = None
+    location: str | None = None
+    bucket: str | None = None
+    prefix: str | None = None
+    pattern: str | None = None
+    layout: dict[str, Any] | None = None
+    layout_text: str | None = None
+    destination: dict[str, Any] | None = None  # the raw table the extract lands in
+    waiting: int = 0
+    last_run: RunOut | None = None
 
 
 class PipelineDetail(PipelineOut):
-    files_waiting: list[dict[str, Any]]
-    files_done: list[dict[str, Any]]
-    runs: list[RunOut]
+    files_waiting: list[dict[str, Any]] = []
+    files_done: list[dict[str, Any]] = []
+    runs: list[RunOut] = []
 
 
 def _get(session: Session, pid: uuid.UUID) -> Pipeline:
@@ -77,28 +81,28 @@ def _get(session: Session, pid: uuid.UUID) -> Pipeline:
 
 
 def _out(session: Session, p: Pipeline, detail: bool = False) -> PipelineOut | PipelineDetail:
-    dest = session.get(Source, p.destination_source_id) if p.destination_source_id else None
-    waiting = pl.waiting_files(p)
-    runs = session.scalars(
-        select(Run).where(Run.pipeline_id == p.id).order_by(Run.created_at.desc()).limit(25 if detail else 1)
-    ).all()
-    base = dict(
-        id=p.id, name=p.name, source_kind=p.source_kind, folder=p.source_config["folder"], host_path=pl.location(p),
-        location=pl.location(p), bucket=p.source_config.get("bucket"), prefix=p.source_config.get("prefix"),
-        pattern=p.source_config.get("pattern") or "*",
-        destination=(
-            {"source_id": dest.id, "name": dest.name, "table_name": dest.table_name, "row_count": dest.row_count}
-            if dest else None
-        ),
-        mode=p.mode, watch_seconds=p.watch_seconds, last_checked_at=p.last_checked_at, created_at=p.created_at,
-        waiting=sum(1 for f in waiting if f["matches"]),
-        last_run=RunOut.model_validate(runs[0]) if runs else None,
+    ex = pl.extract_of(session, p)
+    base: dict[str, Any] = dict(
+        id=p.id, name=p.name, mode=p.mode, watch_seconds=p.watch_seconds,
+        last_checked_at=p.last_checked_at, created_at=p.created_at,
+        extract={"id": ex.id, "name": ex.name, "kind": ex.kind} if ex else None,
     )
-    if not detail:
-        return PipelineOut(**base)
-    return PipelineDetail(
-        **base, files_waiting=waiting, files_done=pl.done_files(p), runs=[RunOut.model_validate(r) for r in runs]
-    )
+    if ex:
+        base.update(source_kind=ex.kind, destination=table_info(session, ex.source_id), **extract_fields(session, ex, detail))
+        if detail:
+            # This pipeline's own loads, not every load the extract has done.
+            runs = session.scalars(
+                select(Run).where(Run.pipeline_id == p.id).order_by(Run.created_at.desc()).limit(25)
+            ).all()
+            base["runs"] = [RunOut.model_validate(r) for r in runs]
+    return PipelineDetail(**base) if detail else PipelineOut(**base)
+
+
+def _extract_or_404(session: Session, eid: uuid.UUID) -> Extract:
+    ex = session.get(Extract, eid)
+    if ex is None:
+        raise HTTPException(400, "That extract doesn't exist anymore")
+    return ex
 
 
 @router.get("", response_model=list[PipelineOut])
@@ -108,38 +112,19 @@ def list_pipelines(session: DB):
 
 @router.post("", response_model=PipelineDetail, status_code=201)
 def create_pipeline(session: DB, body: PipelineIn):
-    dest = None
-    if body.destination_source_id:
-        dest = session.get(Source, body.destination_source_id)
-        if dest is None:
-            raise HTTPException(400, "That table doesn't exist anymore")
-    folder = pl.unique_folder(session, body.name)
-    config: dict[str, Any] = {"folder": folder, "pattern": body.pattern.strip() or "*"}
-    if body.source_kind == "storage":
-        config["bucket"] = (body.bucket or storage.bucket()).strip()
-        config["prefix"] = pl.normalize_prefix(body.prefix if body.prefix is not None else f"incoming/{folder}")
-        problem = pl.check_storage_source(config["bucket"], config["prefix"])
-        if problem:
-            raise HTTPException(400, problem)
-    if not body.destination_source_id:
-        dest = create_source(session, (body.new_table_name or body.name).strip())
-    p = Pipeline(
-        name=body.name.strip(), source_kind=body.source_kind, source_config=config,
-        destination_kind="spadesys", destination_source_id=dest.id, mode=body.mode, watch_seconds=body.watch_seconds,
-    )
+    if body.extract_id:
+        ex = _extract_or_404(session, body.extract_id)
+    else:
+        ex = create_extract(session, ExtractIn(
+            name=body.name, kind=body.source_kind, bucket=body.bucket, prefix=body.prefix, pattern=body.pattern,
+            source_id=body.destination_source_id, new_table_name=body.new_table_name, layout=body.layout,
+        ))
+    p = Pipeline(name=body.name.strip(), extract_id=ex.id, mode=body.mode, watch_seconds=body.watch_seconds)
     session.add(p)
     session.commit()
-    # Create the place now so you can find it.
-    if p.source_kind == "storage":
-        storage.client().put_object(Bucket=config["bucket"], Key=config["prefix"], Body=b"")
-    else:
-        pl.folder_path(p)
     how = f"watching every {p.watch_seconds}s" if p.mode == "watch" else "runs when you click Run now"
-    emit(
-        "pipeline",
-        f"Created pipeline “{p.name}”: files that show up in {pl.location(p)} load into table raw.{dest.table_name} ({how})",
-        pipeline_id=str(p.id),
-    )
+    emit("pipeline", f"Created pipeline “{p.name}”: runs extract “{ex.name}” ({ex_mod.location(ex)}) ({how})",
+         pipeline_id=str(p.id), extract_id=str(ex.id))
     return _out(session, p, detail=True)
 
 
@@ -155,25 +140,21 @@ def update_pipeline(session: DB, pid: uuid.UUID, body: PipelinePatch):
     if body.name is not None and body.name.strip() and body.name.strip() != p.name:
         p.name = body.name.strip()
         changes.append(f"renamed to “{p.name}”")
-    if body.pattern is not None and body.pattern != p.source_config.get("pattern"):
-        p.source_config = {**p.source_config, "pattern": body.pattern.strip() or "*"}
-        changes.append(f"only picks up files matching {p.source_config['pattern']}")
+    if body.extract_id is not None and body.extract_id != p.extract_id:
+        ex = _extract_or_404(session, body.extract_id)
+        p.extract_id = ex.id
+        changes.append(f"now runs extract “{ex.name}”")
     if body.watch_seconds is not None and body.watch_seconds != p.watch_seconds:
         p.watch_seconds = body.watch_seconds
         changes.append(f"checks every {p.watch_seconds}s when watching")
     if body.mode is not None and body.mode != p.mode:
         p.mode = body.mode
         p.last_checked_at = None
+        ex = pl.extract_of(session, p)
         changes.append(
-            f"now watching {pl.location(p)} every {p.watch_seconds}s" if p.mode == "watch"
+            f"now watching {ex_mod.location(ex) if ex else 'its extract'} every {p.watch_seconds}s" if p.mode == "watch"
             else "stopped watching; runs only when you click Run now"
         )
-    if body.destination_source_id is not None and body.destination_source_id != p.destination_source_id:
-        dest = session.get(Source, body.destination_source_id)
-        if dest is None:
-            raise HTTPException(400, "That table doesn't exist anymore")
-        p.destination_source_id = dest.id
-        changes.append(f"now loads into raw.{dest.table_name}")
     session.commit()
     if changes:
         emit("pipeline", f"Pipeline “{p.name}” " + "; ".join(changes), pipeline_id=str(p.id))
@@ -182,12 +163,12 @@ def update_pipeline(session: DB, pid: uuid.UUID, body: PipelinePatch):
 
 @router.delete("/{pid}", status_code=204)
 def delete_pipeline(session: DB, pid: uuid.UUID):
-    """Removes the pipeline only. Its table, its folder and the archived files stay."""
+    """Removes the pipeline only. Its extract, table and files stay."""
     p = _get(session, pid)
-    name, where = p.name, pl.location(p)
+    name = p.name
     session.delete(p)
     session.commit()
-    emit("pipeline", f"Deleted pipeline “{name}”. Its table and the files in {where} were left alone.")
+    emit("pipeline", f"Deleted pipeline “{name}”. Its extract, table and files were left alone (see the Extract tab).")
 
 
 @router.post("/{pid}/run", response_model=list[RunOut])
@@ -198,16 +179,14 @@ def run_now(session: DB, pid: uuid.UUID):
 
 @router.post("/{pid}/files")
 async def add_file(session: DB, pid: uuid.UUID, file: UploadFile = File(...)):
-    """Put a file into the pipeline's folder, exactly as if you'd dropped it there."""
+    """Put a file where the pipeline's extract looks, exactly as if you'd dropped it there."""
     p = _get(session, pid)
-    data = await read_upload(file)
-    name = pl.add_file(p, file.filename or "file.csv", data)
-    then = (
-        ". The pipeline is watching, so it'll be picked up in a few seconds." if p.mode == "watch"
-        else ". Click Run now to load it."
-    )
-    emit("pipeline", f"Added {name} ({human_bytes(len(data))}) to {pl.location(p)}{then}", pipeline_id=str(p.id))
-    return {"name": name}
+    ex = pl.extract_of(session, p)
+    if ex is None:
+        raise HTTPException(400, "This pipeline has no extract")
+    then = (". The pipeline is watching, so it'll be picked up in a few seconds." if p.mode == "watch"
+            else ". Click Run now to load it.")
+    return await add_file_to(session, ex, file, then, pipeline_id=str(p.id))
 
 
 @router.get("/{pid}/events", response_model=list[EventOut])

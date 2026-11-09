@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import io
+import re
 from collections import Counter
 from functools import partial
 from typing import Any, Callable
@@ -19,19 +19,16 @@ from ..models import Run, Source
 from .hashing import hash_frame
 from .infer import infer_schema
 from .load import load_frame
+from .readers import is_default, read_table
 
 
 class ValidationError(Exception):
     pass
 
 
-def read_csv_bytes(data: bytes) -> pd.DataFrame:
-    try:
-        decoded = data.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        decoded = data.decode("latin-1")
-    # sep=None sniffs the delimiter (comma, tab, semicolon, pipe).
-    return pd.read_csv(io.StringIO(decoded), dtype=str, keep_default_na=False, sep=None, engine="python")
+def read_csv_bytes(data: bytes, filename: str = "file.csv") -> pd.DataFrame:
+    """A plain file: headers on row 1, data below. (Kept for callers that don't use layouts.)"""
+    return read_table(data, filename)[0]
 
 
 def validate(df: pd.DataFrame) -> list[str]:
@@ -41,7 +38,7 @@ def validate(df: pd.DataFrame) -> list[str]:
     if len(df) == 0:
         raise ValidationError("File has a header but no rows")
     warnings = []
-    unnamed = [c for c in df.columns if str(c).startswith("Unnamed:")]
+    unnamed = [c for c in df.columns if re.fullmatch(r"column_\d+", str(c))]
     if unnamed:
         warnings.append(f"{len(unnamed)} column(s) had no header and were auto-named")
     return warnings
@@ -55,8 +52,15 @@ def run_csv_ingest(session: Session, run: Run) -> dict[str, Any]:
     data = storage.get_bytes(run.object_key)
     ev("download", f"Fetched {run.original_filename} ({human_bytes(len(data))}) from storage")
 
-    df = read_csv_bytes(data)
-    ev("parse", f"Read {len(df):,} rows × {df.shape[1]} columns", columns=[str(c) for c in df.columns])
+    layout = run.layout
+    df, notes, how = read_table(data, run.original_filename or run.object_key, layout)
+    ev(
+        "parse",
+        f"Read {len(df):,} rows × {df.shape[1]} columns"
+        + (f" using the saved file layout: {how}" if not is_default(layout) else f" ({how})")
+        + (f". {'. '.join(notes)}" if notes else ""),
+        columns=[str(c) for c in df.columns], layout=layout, layout_text=how, notes=notes,
+    )
 
     warnings = validate(df)
     ev("validate", "Checks passed" + (f", with warnings: {'; '.join(warnings)}" if warnings else ": file has a header and rows"))

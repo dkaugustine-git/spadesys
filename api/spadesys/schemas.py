@@ -87,3 +87,7 @@ class FileAnalysis(BaseModel):
     suggestions: list[Suggestion]
     suggested_new_name: str
     suggested_table_name: str
+    layout: dict[str, Any] | None = None
+    layout_text: str = ""
+    layout_notes: list[str] = []
+    layout_guessed: bool = False

@@ -12,7 +12,7 @@ const icon = (d: ReactNode) => (
 export const PAGES: { key: Page; label: string; hint: string; icon: ReactNode }[] = [
   { key: "sources", label: "Sources", hint: "Files you've loaded and the tables they became",
     icon: icon(<><path d="M4 13h4l2 3h4l2-3h4" /><path d="M5.5 5h13L20 13v6H4v-6z" /></>) },
-  { key: "pipelines", label: "Pipelines", hint: "Folders that load into tables, on demand or by watching",
+  { key: "pipelines", label: "Pipelines", hint: "Extract, transform and load: build the pieces, then chain them into pipelines",
     icon: icon(<><circle cx="5" cy="6" r="2.2" /><circle cx="19" cy="18" r="2.2" /><path d="M7.2 6H14a3 3 0 0 1 3 3v0a3 3 0 0 1-3 3h-4a3 3 0 0 0-3 3v0a3 3 0 0 0 3 3h6.8" /></>) },
   { key: "storage", label: "Storage", hint: "What's saved in MinIO",
     icon: icon(<><path d="M3 7l9-4 9 4-9 4z" /><path d="M3 12l9 4 9-4" /><path d="M3 17l9 4 9-4" /></>) },

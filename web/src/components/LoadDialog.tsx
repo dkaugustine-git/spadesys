@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { api, type FileAnalysis, type Source } from "../api";
+import { api, type FileAnalysis, type Layout, type Source } from "../api";
 import { cell, num } from "../format";
+import { LayoutPicker } from "./LayoutPicker";
 
 interface Props {
   analysis: FileAnalysis;
@@ -13,6 +14,8 @@ export function LoadDialog({ analysis: a, onDone, onLater }: Props) {
   const recommended = a.suggestions.find((s) => s.recommended);
   const [choice, setChoice] = useState<string>(recommended ? recommended.source_id : "new");
   const [newName, setNewName] = useState(a.suggested_new_name);
+  const [layout, setLayout] = useState<Layout | null>(a.layout);
+  const [editLayout, setEditLayout] = useState(a.layout_guessed);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -20,7 +23,8 @@ export function LoadDialog({ analysis: a, onDone, onLater }: Props) {
     setBusy(true);
     setErr(null);
     try {
-      const body = choice === "new" ? { key: a.key, new_name: newName } : { key: a.key, source_id: choice };
+      const target = choice === "new" ? { new_name: newName } : { source_id: choice };
+      const body = { key: a.key, layout, ...target };
       onDone(await api.loadStaged(body));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -36,15 +40,32 @@ export function LoadDialog({ analysis: a, onDone, onLater }: Props) {
           It's saved in storage ({num(a.row_count)} rows, {a.columns.length} columns). Nothing else has happened yet.
         </p>
 
-        <div className="table-wrap peek">
-          <table className="data">
-            <thead><tr>{a.columns.map((c) => <th key={c}>{c}</th>)}</tr></thead>
-            <tbody>
-              {a.preview_rows.map((r, i) => <tr key={i}>{r.map((v, j) => <td key={j}>{cell(v)}</td>)}</tr>)}
-            </tbody>
-          </table>
+        {a.layout_guessed && (
+          <p className="ok-note small">
+            This file doesn't start with its column headers{a.layout_notes.length ? ` (${a.layout_notes.join("; ").toLowerCase()})` : ""}.
+            Spadesys's guess is below; check it, then pick where it goes.
+          </p>
+        )}
+        <div className="fl-head">
+          <span className="small">📄 <b>Reading it as:</b> {editLayout ? "see below" : a.layout_text}</span>
+          {!editLayout && <button className="btn btn-link small" onClick={() => setEditLayout(true)}>Change where the table is…</button>}
         </div>
-        <p className="muted small">First {a.preview_rows.length} rows</p>
+
+        {editLayout ? (
+          <LayoutPicker value={layout} onChange={setLayout} load={(l) => api.previewStoredLayout(a.key, l)} />
+        ) : (
+          <>
+            <div className="table-wrap peek">
+              <table className="data">
+                <thead><tr>{a.columns.map((c) => <th key={c}>{c}</th>)}</tr></thead>
+                <tbody>
+                  {a.preview_rows.map((r, i) => <tr key={i}>{r.map((v, j) => <td key={j}>{cell(v)}</td>)}</tr>)}
+                </tbody>
+              </table>
+            </div>
+            <p className="muted small">First {a.preview_rows.length} rows</p>
+          </>
+        )}
 
         <fieldset className="choices">
           {a.suggestions.map((s) => (

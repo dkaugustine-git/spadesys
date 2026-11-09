@@ -52,16 +52,62 @@ class Run(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     pipeline_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)  # set when a pipeline queued it
+    extract_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)  # set when an extract queued it
+    layout: Mapped[dict[str, Any] | None] = mapped_column(JSONB)  # where the table is in the file (ingest/readers.py)
 
     source: Mapped[Source] = relationship(back_populates="runs")
 
 
-class Pipeline(Base):
-    """Moves data from a source to a destination, on demand or by watching.
+class Extract(Base):
+    """Where data comes from, and the raw table it lands in (raw is always kept).
 
-    Today: source = a folder under data/inbox (files dropped there, or added through the UI),
-    destination = a Spadesys table. Each file found becomes one Run; afterwards the file is
-    archived (kept in storage under archive/, and moved to the folder's _done subfolder).
+    kind = folder   data/inbox/<folder> on your computer      config: {folder, pattern}
+    kind = storage  a bucket + prefix in storage (MinIO / S3) config: {folder, pattern, bucket, prefix}
+
+    "folder" in config is the extract's short name; it also names archive/<folder>/ in storage.
+    Each file picked up becomes one Run that loads into raw.<table of source_id>.
+    """
+
+    __tablename__ = "extracts"
+    __table_args__ = {"schema": SCHEMA}
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(32), default="folder")
+    config: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    source_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))  # the raw table it lands in
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Transform(Base):
+    """A reusable change: read one table, apply steps in order, write clean.<output_table>.
+
+    steps is a list of {"op": ..., ...} dicts; see transforms.py for each op.
+    """
+
+    __tablename__ = "transforms"
+    __table_args__ = {"schema": SCHEMA}
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text)
+    input_table: Mapped[str] = mapped_column(String(130))  # "raw.billing_customers"
+    steps: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    output_table: Mapped[str] = mapped_column(String(63))  # written to clean.<output_table>
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_rows: Mapped[int | None] = mapped_column(Integer)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Pipeline(Base):
+    """Orchestration: runs an extract (and, later, transforms and loads) on demand or by watching.
+
+    The source_* / destination_* columns are from before extracts existed. They're kept so old
+    rows can be moved over (see db.init_db) and aren't used otherwise.
     """
 
     __tablename__ = "pipelines"
@@ -69,14 +115,16 @@ class Pipeline(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(200))
-    source_kind: Mapped[str] = mapped_column(String(32), default="folder")
-    source_config: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)  # {"folder": "orders", "pattern": "*.csv"}
-    destination_kind: Mapped[str] = mapped_column(String(32), default="spadesys")
-    destination_source_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    extract_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
     mode: Mapped[str] = mapped_column(String(16), default="manual")  # manual | watch
     watch_seconds: Mapped[int] = mapped_column(Integer, default=10)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # legacy (pre-extract)
+    source_kind: Mapped[str | None] = mapped_column(String(32))
+    source_config: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    destination_kind: Mapped[str | None] = mapped_column(String(32))
+    destination_source_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 
 
 class Event(Base):

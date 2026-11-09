@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 from . import storage
 from .events import emit, human_bytes
 from .ingest.infer import snake_case
-from .ingest.pipeline import read_csv_bytes
+from .ingest.pipeline import read_csv_bytes  # noqa: F401  (re-exported for older callers)
+from .ingest.readers import apply_layout, clean_layout, describe, guess_layout, is_default, read_grid
 from .models import Run, Source
 
 
@@ -34,9 +35,11 @@ def create_source(session: Session, name: str) -> Source:
     return source
 
 
-def queue_run_for_object(session: Session, source: Source, key: str, filename: str) -> Run:
-    """Queue a load of a file that is already in storage."""
-    run = Run(id=uuid.uuid4(), source=source, pipeline="csv_ingest", status="queued", object_key=key, original_filename=filename)
+def queue_run_for_object(session: Session, source: Source, key: str, filename: str,
+                         layout: dict[str, Any] | None = None) -> Run:
+    """Queue a load of a file that is already in storage. layout: where the table is in the file."""
+    run = Run(id=uuid.uuid4(), source=source, pipeline="csv_ingest", status="queued", object_key=key,
+              original_filename=filename, layout=layout)
     session.add(run)
     return run
 
@@ -71,9 +74,16 @@ def ingest_csv(session: Session, filename: str, data: bytes, name: str | None = 
 
 # ---------------------------------------------------------------- suggestions
 
-def analyze_file(session: Session, key: str, filename: str, data: bytes) -> dict[str, Any]:
-    """Peek at a stored file and suggest what to do with it. Changes nothing."""
-    df = read_csv_bytes(data)
+def analyze_file(session: Session, key: str, filename: str, data: bytes,
+                 layout: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Peek at a stored file and suggest what to do with it. Changes nothing.
+
+    With no layout, Spadesys guesses where the table is (title rows, a totals row) and says so.
+    """
+    grid = read_grid(data, filename, (layout or {}).get("sheet"))
+    guessed = layout is None
+    layout = clean_layout(layout or guess_layout(grid))
+    df, notes = apply_layout(grid, layout)
     columns = [str(c) for c in df.columns]
     stem = snake_case(PurePath(filename).stem, fallback="dataset")
     col_set = set(columns)
@@ -126,4 +136,8 @@ def analyze_file(session: Session, key: str, filename: str, data: bytes) -> dict
         "suggestions": suggestions[:5],
         "suggested_new_name": PurePath(filename).stem,
         "suggested_table_name": unique_table_name(session, PurePath(filename).stem),
+        "layout": layout,
+        "layout_text": describe(layout, grid),
+        "layout_notes": notes,
+        "layout_guessed": guessed and not is_default(layout),
     }

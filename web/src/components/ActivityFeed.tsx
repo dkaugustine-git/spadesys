@@ -23,6 +23,7 @@ export const STAGES: Record<string, { label: string; why: string }> = {
   delete: { label: "Delete", why: "A source was removed." },
   storage: { label: "Storage", why: "Something changed in storage: a folder made, files uploaded, exported, or deleted." },
   pipeline: { label: "Pipeline", why: "A pipeline checked its folder, picked up files, or was changed." },
+  transform: { label: "Transform", why: "A transform was saved or run. Transforms read a table and write a clean copy; raw data is never changed." },
 };
 
 const time = (iso: string) => {
@@ -33,11 +34,13 @@ const time = (iso: string) => {
 interface Props {
   sourceId?: string;
   pipelineId?: string;
+  extractId?: string;
+  transformId?: string;
   title?: string;
   compact?: boolean;
 }
 
-export function ActivityFeed({ sourceId, pipelineId, title = "Activity", compact = false }: Props) {
+export function ActivityFeed({ sourceId, pipelineId, extractId, transformId, title = "Activity", compact = false }: Props) {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<number | null>(null);
@@ -54,6 +57,10 @@ export function ActivityFeed({ sourceId, pipelineId, title = "Activity", compact
       try {
         const fresh = pipelineId
           ? await api.pipelineEvents(pipelineId, lastId.current)
+          : extractId
+          ? await api.extractEvents(extractId, lastId.current)
+          : transformId
+          ? await api.transformEvents(transformId, lastId.current)
           : await api.events({ afterId: lastId.current, sourceId });
         if (cancelled || !fresh.length) return;
         lastId.current = fresh[fresh.length - 1].id;
@@ -69,7 +76,7 @@ export function ActivityFeed({ sourceId, pipelineId, title = "Activity", compact
       cancelled = true;
       clearInterval(t);
     };
-  }, [sourceId, pipelineId]);
+  }, [sourceId, pipelineId, extractId, transformId]);
 
   // Keep scrolled to the newest line unless the user scrolled up to read.
   useEffect(() => {

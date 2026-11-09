@@ -14,6 +14,9 @@ dependencies = [
   "boto3>=1.35",
   "faker>=30.0",
   "pymysql>=1.1",
+  "openpyxl>=3.1",  # .xlsx
+  "xlrd>=2.0",  # .xls
+  "odfpy>=1.4",  # .ods
 ]
 
 [project.optional-dependencies]

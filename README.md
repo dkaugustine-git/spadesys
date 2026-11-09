@@ -5,7 +5,8 @@
 Spadesys gives small teams a self-hosted data platform without enterprise consulting retainers or large cloud bills. Run `docker compose up` and you get:
 
 - **Ingestion with a human in the loop:** drop a file, see what's in it, and decide where it goes. Spadesys recommends a table but never creates one behind your back.
-- **Pipelines:** watch a folder (on your computer or in storage) and load every file that shows up, then archive it.
+- **Pipelines (extract, transform, load):** watch a folder (on your computer or in storage) and load every file that shows up, then reshape it with reusable transforms: split a column, parse names, stack two sources, remove duplicates. Every transform shows the SQL it runs.
+- **Messy files welcome:** CSV, Excel (.xlsx, .xls) and OpenDocument (.ods). When a file has a title above the table or a totals row below it, pick the header row and the first data row in a preview, and Spadesys reads every future file the same way.
 - **Dev data:** point at a real table (or paste column headers from a spreadsheet) and generate realistic fake rows that respect types, keys and foreign keys.
 - **Storage browser:** folders, upload, download, zip export and delete for everything in object storage.
 - **Databases:** CloudBeaver (web DBeaver) built in, already connected to every database Spadesys knows about.
@@ -66,8 +67,8 @@ Navigation runs down the left side. It shrinks to icons and becomes a bottom bar
 
 | Page | What it does |
 |---|---|
-| **Sources** | Tables you've loaded: columns and inferred types, data preview, load history. Drop a CSV here to stage it; a dialog asks what to do with it and recommends a matching table when the file name or columns match one you've loaded before. When nothing is selected, the live Activity log shows. |
-| **Pipelines** | Folder → table, on demand or watching (see below). |
+| **Sources** | Tables you've loaded: columns and inferred types, data preview, load history. Drop a CSV or spreadsheet here to stage it; a dialog shows where it thinks the table is in the file (you can change it), asks what to do with it and recommends a matching table when the file name or columns match one you've loaded before. When nothing is selected, the live Activity log shows. |
+| **Pipelines** | Extract, transform and load: build the pieces, then chain them into pipelines (see below). |
 | **Storage** | Browse MinIO like a file explorer: new folder, upload (button or drag and drop), download a file or a whole folder as .zip, delete with confirmation, preview text files, load a CSV into a table, or watch a folder with a pipeline. |
 | **Dev data** | Generate fake rows (see below). |
 | **Databases** | CloudBeaver inside the app. |
@@ -83,7 +84,8 @@ worker ──► validate ──► infer schema ──► hash rows ──► l
 ```
 
 - **Land first.** The original file is kept in object storage under a readable path (`uploads/2026-11-07/143205_orders.csv`), so every load can be replayed.
-- **Validate.** Encoding (UTF-8 / BOM / Latin-1 fallback), delimiter sniffing, empty-file and header checks.
+- **Read.** CSV/TSV (UTF-8 / BOM / Latin-1 fallback, delimiter sniffing), Excel and OpenDocument spreadsheets. A file layout, when one is set, says which sheet, the header row, the first data row and where to stop (see below).
+- **Validate.** Empty-file and header checks.
 - **Infer.** Each column is typed as boolean, integer, decimal, date, timestamp or text, with null counts, distinct counts and key candidates. Leading-zero values such as zip codes stay text.
 - **Hash.** Each row gets a SHA-256 of its normalized raw values. `_row_hash` is the primary key, so loading the same rows again inserts nothing, and new columns are added automatically when the schema drifts.
 - **Load.** Typed tables land in the `raw` schema with `_row_hash`, `_run_id` and `_loaded_at` lineage columns.
@@ -91,17 +93,58 @@ worker ──► validate ──► infer schema ──► hash rows ──► l
 
 The worker uses Postgres itself as the job queue (`FOR UPDATE SKIP LOCKED`), so there's no Redis or Celery. Scale it with `docker compose up --scale worker=3`.
 
-## Pipelines
+## Pipelines (extract, transform, load)
 
-A pipeline has a **source**, a **destination table** and a **trigger**.
+The Pipelines page has four sub-tabs. You build the pieces once on their own tabs, and a pipeline chains them together, so one piece can be reused in many pipelines.
 
-- **Source: a folder on your computer.** Spadesys makes `data/inbox/<name>/`. Drop files there from Explorer or Finder, or use **Add a file…**. After a file is picked up, a copy goes to storage under `archive/<name>/` and the file moves to `data/inbox/<name>/_done/`. Files still being copied in are left alone until they stop changing.
-- **Source: a folder in storage.** Any bucket and prefix in MinIO, so anything that writes S3 can feed it. New objects are moved to `archive/<name>/` and loaded. The Storage tab has a **Watch with a pipeline** button.
-- **Destination:** a new or existing Spadesys table.
-- **Trigger:** **Run now**, or **watch** (the worker checks every N seconds).
-- Only files matching a name pattern (e.g. `orders_*.csv`) are picked up. Nothing is ever deleted, and duplicate rows are skipped by the row hash.
+| Sub-tab | What it holds |
+|---|---|
+| **Pipelines** | Orchestration: which pieces run, in what order, and when (**Run now**, or **watch** every N seconds). |
+| **Extract** | Where data comes from. Each file that shows up lands, untouched, in a `raw` table. |
+| **Transform** | Reusable changes from one table to a `clean` table: split, parse names, join, clean up, rename, remove, stack another table, remove duplicates. |
+| **Load** | Where finished data goes, such as a clean table, Doris, a CSV file or email. *Coming next.* |
 
-Each pipeline has its own page: where files come from → which table they go to, files waiting and done, loads with row counts, and its own activity feed. Pipeline pages can be bookmarked (`#/pipelines/<id>`).
+**Raw is always kept.** Spadesys is ELT: data lands as-is first, and transforms read the raw table and write somewhere else. A wrong transform can be fixed and re-run without asking anyone to resend the file.
+
+**Extracts** pick up files from one of two places:
+
+- **A folder on your computer.** Spadesys makes `data/inbox/<name>/`. Drop files there from Explorer or Finder, or use **Add a file…**. After a file is picked up, a copy goes to storage under `archive/<name>/` and the file moves to `data/inbox/<name>/_done/`. Files still being copied in are left alone until they stop changing.
+- **A folder in storage.** Any bucket and prefix in MinIO, so anything that writes S3 can feed it. New objects are moved to `archive/<name>/` and loaded. The Storage tab has a **Watch with a pipeline** button.
+
+Only files matching a name pattern (e.g. `orders_*.csv`) are picked up. Nothing is ever deleted, and duplicate rows are skipped by the row hash.
+
+Pipelines and extracts each have their own page: the flow, files waiting and done, loads with row counts, and an activity feed. Pages can be bookmarked (`#/pipelines/<id>`, `#/pipelines/extract/<id>`, `#/pipelines/transform/<id>`).
+
+### File layouts: where the table is in the file
+
+Real exports often have a report title, a date line and a blank row above the headers, and a "Total" row or a note under the data. A **file layout** says where the table is:
+
+- which **sheet** (for spreadsheets)
+- the **header row** (or "no header row")
+- the **first data row**
+- where to **stop**: the end of the file, the first blank row, or a row starting with some text, such as `Total`
+
+Spadesys guesses the layout and shows the file as numbered rows, with what will be skipped, the header row, the data and the stop row marked. Click a row to correct it, and the result ("Loads as 3 rows × 4 columns") updates as you go.
+
+- On an **extract**, set it up from a sample file (one that's waiting, one loaded before, or one from your computer). It's saved on the extract, shown on the extract and pipeline pages, and used for every future file.
+- When you **drop a file** on Sources, the dialog shows the layout it will use and opens the picker when the file doesn't start with its headers.
+- Every load records the layout it used in the Activity log, for example: *Read 3 rows × 4 columns using the saved file layout: sheet "October", column headers on row 4, data from row 5 until a row starting with "Total". Skipped 3 rows above the headers.*
+
+### Transforms
+
+A transform reads one table (from `raw` or `clean`), applies steps in order, and writes the result to `clean.<name>`. The raw table is only read, so you can change a step and run it again any time; each run rebuilds the clean table from scratch.
+
+| Step | Example |
+|---|---|
+| Split a column | `ACC-1001-WEST` at `-` → `ACC` · `1001` · `WEST` |
+| Parse names | `Smith, Jane` and `Jane Smith` → `Jane` · `Smith` |
+| Join columns | `Jane` + `Smith` → `Jane Smith` |
+| Clean up text | trim and squeeze spaces; Title / UPPER / lower case |
+| Rename / remove columns | `cust_nm` → `customer_name` |
+| Stack another table | add another table's rows underneath, matching columns, optionally with a "came from" column |
+| Remove duplicates | one row per first + last name, ignoring capitals and spaces |
+
+The editor shows a live preview after every change, the columns available at each step, and **Show the SQL**: each step compiles to one readable CTE, so the transform doubles as a SQL lesson. A step that doesn't fit (a column that no longer exists, say) is flagged in place. Steps can be reordered or switched off without deleting them. Transforms are built and run on the Transform tab; running them as a pipeline step comes next.
 
 ## Dev data
 
@@ -145,10 +188,12 @@ Then connect with any MySQL client on `localhost:9030` (user `root`, no password
 ```
 api/                   FastAPI control plane + worker (one image, two entrypoints)
   spadesys/
-    ingest/            infer.py · hashing.py · load.py · pipeline.py
+    ingest/            readers.py (files + layouts) · infer.py · hashing.py · load.py · pipeline.py
     devdata/           generators.py · recommend.py · engine.py · dbbrowse.py
-    routes/            sources, uploads, runs, events, pipelines, storage_browser, devdata, databases
-    pipelines.py       folder / storage watching, archiving
+    routes/            sources, uploads, runs, events, extracts, layouts, transforms, pipelines, storage_browser, devdata, databases
+    extracts.py        picking up files from a folder or storage, archiving, landing in raw
+    pipelines.py       orchestration: runs the pieces, watching
+    transforms.py      transform steps → SQL
     cloudbeaver.py     keeps CloudBeaver's database list in sync
     events.py          the Activity log
     generators/        Faker commerce data (also a CLI)
@@ -189,7 +234,12 @@ The API, worker and web containers mount your source and hot-reload. The worker 
 - [x] Dev data generator: from a live table or pasted headers, with reasons and FK-aware inserts
 - [x] Pipelines: folder or storage source → table, on demand or watching, with archiving
 - [x] CloudBeaver and API docs built into the UI; sidebar navigation
-- [ ] Pipelines with a database table as the source (full or incremental), API sources, Doris as a destination
+- [x] Pipelines split into reusable Extract / Transform / Load pieces
+- [x] Transforms: split at a character, parse names, join, clean up, stack sources, remove duplicates, with live preview and SQL
+- [x] Excel / OpenDocument files and file layouts (header row, data start, stop rule), saved on extracts
+- [ ] Transforms and loads as pipeline steps; Load tab (clean table, Doris, CSV file, email)
+- [ ] Training labs: story-style scripts with seed data and automatic checks
+- [ ] Extracts from a database table (full or incremental), API sources, Doris as a destination
 - [ ] AI assistant: schema review, semantic types / PII, mapping, Doris DDL suggestions, natural-language-to-SQL (pluggable: Claude or local models)
 - [ ] Doris loader: raw → nested `ARRAY<STRUCT>` warehouse model
 - [ ] Scheduling and pipeline DAGs

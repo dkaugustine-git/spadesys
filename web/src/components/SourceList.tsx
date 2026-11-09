@@ -66,7 +66,7 @@ export function SourceList({ sources, error, selected, onSelect, onChanged, onSh
         <input
           ref={input}
           type="file"
-          accept=".csv,.tsv,.txt,text/csv"
+          accept=".csv,.tsv,.txt,.xlsx,.xlsm,.xls,.ods"
           multiple
           hidden
           onChange={(e) => {

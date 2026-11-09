@@ -59,7 +59,7 @@ export function SourceView({ id, onBack, onDeleted, onChanged }: Props) {
           <input
             ref={reloadInput}
             type="file"
-            accept=".csv,.tsv,.txt,text/csv"
+            accept=".csv,.tsv,.txt,.xlsx,.xlsm,.xls,.ods"
             hidden
             onChange={(e) => {
               const f = e.target.files?.[0];

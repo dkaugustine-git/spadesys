@@ -11,7 +11,7 @@ from . import __version__, cloudbeaver, storage
 from .db import SessionLocal, get_session, init_db
 from .generators.commerce import generate, to_csv_bytes
 from .events import emit
-from .routes import databases, devdata, events, pipelines, runs, sources, storage_browser, uploads
+from .routes import databases, devdata, events, extracts, layouts, pipelines, transforms, runs, sources, storage_browser, uploads
 from .schemas import GenerateRequest, SourceOut
 from .services import ingest_csv
 
@@ -69,5 +69,8 @@ api.include_router(uploads.router)
 api.include_router(storage_browser.router)
 api.include_router(devdata.router)
 api.include_router(databases.router)
+api.include_router(extracts.router)
 api.include_router(pipelines.router)
+api.include_router(transforms.router)
+api.include_router(layouts.router)
 app.include_router(api)

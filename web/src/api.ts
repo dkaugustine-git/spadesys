@@ -96,6 +96,36 @@ export interface FileAnalysis {
   suggestions: Suggestion[];
   suggested_new_name: string;
   suggested_table_name: string;
+  layout: Layout | null;
+  layout_text: string;
+  layout_notes: string[];
+  layout_guessed: boolean; // Spadesys thinks the table doesn't start on row 1
+}
+
+/** Where the table is inside a file. Rows are 1-based; header_row 0 = no header row. */
+export interface Layout {
+  sheet?: string | null;
+  header_row: number;
+  data_row: number;
+  stop: "end" | "blank" | "text";
+  stop_text?: string;
+}
+
+export interface LayoutPreview {
+  ok: boolean;
+  error?: string;
+  filename: string;
+  sheets: string[];
+  sheet: string | null;
+  grid: string[][];
+  total_rows: number;
+  guess: Layout;
+  layout: Layout;
+  layout_text?: string;
+  notes?: string[];
+  columns?: string[];
+  rows?: string[][];
+  row_count?: number;
 }
 
 export interface StorageFile {
@@ -173,23 +203,58 @@ export interface PipelineFile {
   path?: string;
 }
 
-export interface Pipeline {
-  id: string;
-  name: string;
-  source_kind: string;
+/** Where files show up and the raw table they land in. Shared by extracts and (read-only) pipelines. */
+export interface ExtractPlace {
   folder: string;
-  host_path: string;
+  layout: Layout | null;
+  layout_text: string;
   location: string;
   bucket: string | null;
   prefix: string | null;
   pattern: string;
-  destination: { source_id: string; name: string; table_name: string; row_count: number } | null;
+  waiting: number;
+  last_run: Run | null;
+}
+
+export interface Extract extends ExtractPlace {
+  id: string;
+  name: string;
+  kind: "folder" | "storage";
+  table: TableRef | null;
+  created_at: string;
+  used_by: { id: string; name: string; mode: "manual" | "watch" }[];
+}
+
+export interface ExtractDetail extends Extract {
+  files_waiting: PipelineFile[];
+  files_done: PipelineFile[];
+  runs: Run[];
+}
+
+export interface TableRef { source_id: string; name: string; table_name: string; row_count: number }
+
+export interface ExtractIn {
+  name: string;
+  kind: "folder" | "storage";
+  bucket?: string;
+  prefix?: string;
+  pattern: string;
+  source_id?: string | null;
+  new_table_name?: string | null;
+  layout?: Layout | null;
+}
+
+export interface Pipeline extends Partial<ExtractPlace> {
+  id: string;
+  name: string;
+  extract: { id: string; name: string; kind: "folder" | "storage" } | null;
+  source_kind: "folder" | "storage" | null;
+  destination: TableRef | null;
   mode: "manual" | "watch";
   watch_seconds: number;
   last_checked_at: string | null;
   created_at: string;
   waiting: number;
-  last_run: Run | null;
 }
 
 export interface PipelineDetail extends Pipeline {
@@ -200,14 +265,49 @@ export interface PipelineDetail extends Pipeline {
 
 export interface PipelineIn {
   name: string;
+  extract_id?: string;
   source_kind?: "folder" | "storage";
   bucket?: string;
   prefix?: string;
-  pattern: string;
+  pattern?: string;
   destination_source_id?: string | null;
   new_table_name?: string | null;
+  layout?: Layout | null;
   mode: "manual" | "watch";
   watch_seconds: number;
+}
+
+export type StepOp = "split" | "parse_name" | "join" | "clean" | "rename" | "drop" | "stack" | "dedupe";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type TransformStep = { op: StepOp; disabled?: boolean; [k: string]: any };
+export interface ColInfo { name: string; type: string }
+export interface TableInfo { full: string; schema: string; name: string; columns: ColInfo[]; made_by: { id: string; name: string } | null }
+
+export interface Transform {
+  id: string;
+  name: string;
+  description: string | null;
+  input_table: string;
+  steps: TransformStep[];
+  output_table: string;
+  output_full: string;
+  last_run_at: string | null;
+  last_rows: number | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TransformBody { name: string; description?: string | null; input_table: string; steps: TransformStep[]; output_table: string }
+
+export interface TransformPreview {
+  ok: boolean;
+  sql?: string;
+  columns?: ColInfo[];
+  step_columns?: ColInfo[][];
+  rows?: unknown[][];
+  row_count?: number;
+  error?: { step: number | null; message: string };
 }
 
 export interface Health {
@@ -261,7 +361,18 @@ export const api = {
     return request<FileAnalysis>("/uploads", { method: "POST", body: form });
   },
   analyzeStored: (key: string) => request<FileAnalysis>(`/uploads/analyze?key=${encodeURIComponent(key)}`),
-  loadStaged: (body: { key: string; source_id?: string; new_name?: string }) => request<Source>("/uploads/load", json(body)),
+  loadStaged: (body: { key: string; source_id?: string; new_name?: string; layout?: Layout | null }) => request<Source>("/uploads/load", json(body)),
+  previewStoredLayout: (key: string, layout: Layout | null, bucket?: string) =>
+    request<LayoutPreview>("/layouts/preview", json({ key, layout, bucket })),
+  previewFileLayout: (file: File, layout: Layout | null) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (layout) form.append("layout", JSON.stringify(layout));
+    return request<LayoutPreview>("/layouts/preview-file", { method: "POST", body: form });
+  },
+  extractSamples: (id: string) => request<{ ref: string; label: string }[]>(`/extracts/${id}/samples`),
+  extractLayoutPreview: (id: string, ref: string, layout: Layout | null) =>
+    request<LayoutPreview>(`/extracts/${id}/layout-preview`, json({ ref, layout })),
   buckets: () => request<{ buckets: string[]; default: string }>("/storage/buckets"),
   listFolder: (bucket: string, prefix: string) =>
     request<StorageFolder>(`/storage/list?bucket=${encodeURIComponent(bucket)}&prefix=${encodeURIComponent(prefix)}`),
@@ -316,7 +427,7 @@ export const api = {
   pipelines: () => request<Pipeline[]>("/pipelines"),
   pipeline: (id: string) => request<PipelineDetail>(`/pipelines/${id}`),
   createPipeline: (b: PipelineIn) => request<PipelineDetail>("/pipelines", json(b)),
-  updatePipeline: (id: string, b: Partial<PipelineIn>) =>
+  updatePipeline: (id: string, b: { name?: string; extract_id?: string; mode?: "manual" | "watch"; watch_seconds?: number }) =>
     request<PipelineDetail>(`/pipelines/${id}`, { ...json(b), method: "PATCH" }),
   deletePipeline: (id: string) => request<void>(`/pipelines/${id}`, { method: "DELETE" }),
   runPipeline: (id: string) => request<Run[]>(`/pipelines/${id}/run`, { method: "POST" }),
@@ -326,6 +437,28 @@ export const api = {
     return request<{ name: string }>(`/pipelines/${id}/files`, { method: "POST", body: form });
   },
   pipelineEvents: (id: string, afterId = 0) => request<ActivityEvent[]>(`/pipelines/${id}/events?after_id=${afterId}`),
+  transforms: () => request<Transform[]>("/transforms"),
+  transformTables: () => request<TableInfo[]>("/transforms/tables"),
+  previewTransform: (b: { input_table: string; steps: TransformStep[]; output_table?: string; limit?: number }) =>
+    request<TransformPreview>("/transforms/preview", json(b)),
+  createTransform: (b: TransformBody) => request<Transform>("/transforms", json(b)),
+  saveTransform: (id: string, b: TransformBody) => request<Transform>(`/transforms/${id}`, { ...json(b), method: "PUT" }),
+  deleteTransform: (id: string, dropTable = false) => request<void>(`/transforms/${id}?drop_table=${dropTable}`, { method: "DELETE" }),
+  runTransform: (id: string) => request<{ rows: number; table: string }>(`/transforms/${id}/run`, { method: "POST" }),
+  transformEvents: (id: string, afterId = 0) => request<ActivityEvent[]>(`/transforms/${id}/events?after_id=${afterId}`),
+  extracts: () => request<Extract[]>("/extracts"),
+  extract: (id: string) => request<ExtractDetail>(`/extracts/${id}`),
+  createExtract: (b: ExtractIn) => request<ExtractDetail>("/extracts", json(b)),
+  updateExtract: (id: string, b: { name?: string; pattern?: string; source_id?: string; layout?: Layout; reset_layout?: boolean }) =>
+    request<ExtractDetail>(`/extracts/${id}`, { ...json(b), method: "PATCH" }),
+  deleteExtract: (id: string) => request<void>(`/extracts/${id}`, { method: "DELETE" }),
+  runExtract: (id: string) => request<Run[]>(`/extracts/${id}/run`, { method: "POST" }),
+  addExtractFile: (id: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<{ name: string }>(`/extracts/${id}/files`, { method: "POST", body: form });
+  },
+  extractEvents: (id: string, afterId = 0) => request<ActivityEvent[]>(`/extracts/${id}/events?after_id=${afterId}`),
   retry: (runId: string) => request<Run>(`/runs/${runId}/retry`, { method: "POST" }),
   generateCommerce: (opts: { customers?: number; items?: number; orders?: number } = {}) =>
     request<Source[]>("/generate/commerce", json(opts)),

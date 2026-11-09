@@ -53,7 +53,7 @@ export function StoragePage({ onLoadFile, onMakePipeline }: Props) {
 
   const open = (p: string) => { setPrefix(p); setSelected(null); setNote(null); setErr(null); };
   const parts = prefix.split("/").filter(Boolean);
-  const isCsv = (k: string) => /\.(csv|tsv|txt)$/i.test(k);
+  const isCsv = (k: string) => /\.(csv|tsv|txt|xlsx|xlsm|xls|ods)$/i.test(k);
   const here = `${bucket ?? ""}/${prefix}`;
 
   async function act(label: string, fn: () => Promise<string | void>) {
